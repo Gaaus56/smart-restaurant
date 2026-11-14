@@ -297,7 +297,9 @@ async function scenarioPayWhileOrdering() {
   const ADDS = Number(process.env.ADDS || 4);
   const item = await anyMenuItem();
   const tableIds = [];
+  const orderIds = [];
   const results = [];
+  const payments = [];
 
   for (let round = 0; round < ROUNDS; round += 1) {
     const table = await createTable(`E${round}`);
@@ -306,13 +308,16 @@ async function scenarioPayWhileOrdering() {
       "INSERT INTO orders (table_id, customer_name, status, total_amount) VALUES ($1, 'Concurrency test', 'served', 0) RETURNING id",
       [table.id]
     );
+    orderIds.push(rows[0].id);
     const burst = [call("POST", `/api/payment/orders/${rows[0].id}/pay`, { body: { method: "cash" } })];
     for (let k = 0; k < ADDS; k += 1) {
       burst.push(
         call("POST", "/api/orders", { body: { tableId: table.id, items: [{ itemId: item.id, quantity: 1 }] } })
       );
     }
-    results.push(...(await Promise.all(burst)));
+    const settled = await Promise.all(burst);
+    payments.push(settled[0]);
+    results.push(...settled);
   }
 
   // Bất biến: tổng tiền mỗi đơn = tổng tiền các món của đơn đó; không món nào bị mất.
@@ -330,6 +335,12 @@ async function scenarioPayWhileOrdering() {
     [tableIds]
   );
 
+  // Thanh toán phải THÀNH CÔNG (không chỉ "không lỗi 5xx"): HTTP 200 và đơn thật sự ở trạng thái 'paid'.
+  const { rows: paidRows } = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM orders WHERE id = ANY($1) AND status = 'paid'",
+    [orderIds]
+  );
+  const paymentsOk = payments.filter((r) => r.status === 200).length;
   const failed = results.filter((r) => r.status === "timeout" || r.status >= 500).length;
   const deadlocks = results.filter((r) => /deadlock/i.test(r.body?.message || "")).length;
   const added = results.filter((r) => r.status === 201).length;
@@ -340,12 +351,20 @@ async function scenarioPayWhileOrdering() {
     p95ms: percentile(results.map((r) => r.ms), 95),
     metrics: {
       rounds: ROUNDS,
+      paymentsSucceeded: `${paymentsOk}/${ROUNDS}`,
+      ordersMarkedPaid: `${paidRows[0].n}/${ROUNDS}`,
       failedRequests: failed,
       deadlockErrors: deadlocks,
       itemsSaved: `${saved[0].n}/${added}`,
       ordersWithWrongTotal: wrongTotals.length,
     },
-    pass: failed === 0 && added === ROUNDS * ADDS && saved[0].n === added && wrongTotals.length === 0,
+    pass:
+      failed === 0 &&
+      paymentsOk === ROUNDS &&
+      paidRows[0].n === ROUNDS &&
+      added === ROUNDS * ADDS &&
+      saved[0].n === added &&
+      wrongTotals.length === 0,
   };
 }
 
