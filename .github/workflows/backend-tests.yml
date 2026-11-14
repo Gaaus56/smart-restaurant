@@ -1,0 +1,70 @@
+name: Backend tests
+
+on:
+  push:
+    branches: [main]
+    paths: ["backend/**", ".github/workflows/backend-tests.yml"]
+  pull_request:
+    paths: ["backend/**", ".github/workflows/backend-tests.yml"]
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  unit:
+    name: Unit tests + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run test:coverage
+
+  concurrency:
+    name: Concurrency tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: smart_restaurant
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/smart_restaurant
+      NODE_ENV: development
+      PORT: 4000
+      API_URL: http://localhost:4000
+      CLIENT_BASE_URL: http://localhost:3000
+      STRIPE_SECRET_KEY: sk_test_ci_dummy
+      STRIPE_WEBHOOK_SECRET: whsec_ci_dummy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Generate per-run secrets
+        run: |
+          echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "QR_JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - run: npm run migrate && npm run seed
+      - name: Start API
+        run: |
+          nohup node src/index.js > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:4000/health && exit 0; sleep 1; done
+          cat server.log; exit 1
+      - run: npm run test:concurrency
+      - name: Server log
+        if: always()
+        run: tail -n 100 server.log
