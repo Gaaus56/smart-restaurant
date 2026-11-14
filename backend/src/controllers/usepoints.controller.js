@@ -12,7 +12,7 @@ const db = require("../db");
  */
 exports.usePoints = async (req, res, next) => {
   const { id } = req.params;
-  const points = Number(req.body.points);
+  const points = Number((req.body || {}).points);
 
   if (!req.customer || !req.customer.userId) {
     return res.status(401).json({ message: "Customer login required" });

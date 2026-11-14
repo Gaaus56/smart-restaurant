@@ -55,7 +55,9 @@ exports.getAll = async (req, res, next) => {
  */
 exports.create = async (req, res, next) => {
   // Support both old format (table_id) and new format (tableId)
-  const { table_id, tableId, items, customer_name, customerId, notes } = req.body;
+  // `req.body || {}`: đoạn này chạy ngoài try — Express 4 không bắt lỗi của hàm async,
+  // nên truy cập thuộc tính của body undefined có thể làm sập tiến trình.
+  const { table_id, tableId, items, customer_name, customerId, notes } = req.body || {};
   const finalTableId = tableId || table_id;
 
   if (!finalTableId) {
