@@ -6,6 +6,7 @@
 const db = require("../db");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const config = require("../config");
 const crypto = require("crypto");
 const sendEmail = require("../utils/sendEmail");
 const { OAuth2Client } = require("google-auth-library");
@@ -136,7 +137,7 @@ exports.login = async (req, res, next) => {
     // Generate Token
     const token = jwt.sign(
       { userId: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET || "secret",
+      config.jwtSecret,
       { expiresIn: "1d" }
     );
 
@@ -335,7 +336,7 @@ exports.googleAuth = async (req, res, next) => {
     // 4. Cấp Token JWT
     const accessToken = jwt.sign(
       { userId: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET || "secret",
+      config.jwtSecret,
       { expiresIn: "1d" }
     );
 
@@ -482,7 +483,7 @@ exports.verifyToken = async (req, res, next) => {
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) return res.status(401).json({ message: "No token provided" });
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret");
+    const decoded = jwt.verify(token, config.jwtSecret);
 
     const result = await db.query(
       "SELECT id, email, full_name, role, status, avatar_url FROM users WHERE id = $1",

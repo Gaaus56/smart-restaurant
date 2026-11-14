@@ -5,6 +5,7 @@
 
 const db = require("../db");
 const jwt = require("jsonwebtoken");
+const config = require("../config");
 
 /**
  * GET /api/menu/verify
@@ -26,7 +27,7 @@ exports.verifyQR = async (req, res, next) => {
 
     // Verify JWT Signature
     try {
-      jwt.verify(token, process.env.QR_JWT_SECRET);
+      jwt.verify(token, config.qrJwtSecret);
     } catch (err) {
       return res.status(401).json({
         valid: false,

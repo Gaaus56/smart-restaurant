@@ -136,7 +136,8 @@ docker run -d --name sr-bench-db -e POSTGRES_PASSWORD=bench -e POSTGRES_DB=smart
 
 cd backend
 export DATABASE_URL=postgres://postgres:bench@localhost:55432/smart_restaurant
-export JWT_SECRET=test-jwt QR_JWT_SECRET=test-qr STRIPE_SECRET_KEY=sk_test_dummy STRIPE_WEBHOOK_SECRET=whsec_test
+export JWT_SECRET=$(openssl rand -hex 32) QR_JWT_SECRET=$(openssl rand -hex 32)   # bắt buộc, ≥ 32 ký tự
+export STRIPE_SECRET_KEY=sk_test_dummy STRIPE_WEBHOOK_SECRET=whsec_test
 npm run migrate && npm run seed
 PORT=4000 node src/index.js &
 
@@ -155,8 +156,8 @@ Biến điều chỉnh bộ test: `TABLES`, `BURST`, `REPLAYS`, `SCENARIOS=A,B,C
 
 ## 6. Giới hạn & việc tiếp theo
 - Khoá theo bàn tuần tự hoá việc gọi món **trong cùng một bàn** — chấp nhận được vì một bàn chỉ có vài khách.
-- Webhook vẫn chấp nhận sự kiện không ký khi **thiếu** `STRIPE_WEBHOOK_SECRET` (chế độ thử nghiệm) — sẽ chuyển sang
-  bắt buộc cùng với việc bỏ các secret mặc định (`JWT_SECRET || "secret"`).
+- ~~Webhook chấp nhận sự kiện không ký khi thiếu `STRIPE_WEBHOOK_SECRET`~~ — đã sửa: webhook luôn xác thực chữ ký,
+  server từ chối khởi động nếu thiếu/yếu secret (xem `backend/src/config.js`).
 - Các thao tác chuyển trạng thái của phục vụ/bếp (nhận đơn, báo xong món) vẫn kiểm tra rồi mới cập nhật trong hai câu lệnh
   riêng; hậu quả nếu chạy đua chỉ là gửi trùng thông báo, không sai tiền/điểm — sẽ chuyển sang `UPDATE ... WHERE status = ...`.
 - Bộ test đồng thời là kiểm thử tích hợp cần API + CSDL đang chạy; có thể đưa vào CI bằng service container PostgreSQL.

@@ -5,14 +5,13 @@
  */
 
 const db = require("../db");
+const config = require("../config");
 const { getIO } = require("../socket");
 const { markOrderPaid } = require("../services/payment.service");
 
-// Stripe initialization (optional - only if STRIPE_SECRET_KEY is set)
-let stripe = null;
-if (process.env.STRIPE_SECRET_KEY) {
-  stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-}
+// Stripe initialization (optional - only if STRIPE_SECRET_KEY is set).
+// config.js đảm bảo đã bật Stripe thì luôn có STRIPE_WEBHOOK_SECRET.
+const stripe = config.stripeSecretKey ? require("stripe")(config.stripeSecretKey) : null;
 
 // VietQR configuration
 const VIETQR_CONFIG = {
@@ -431,18 +430,14 @@ exports.handleStripeWebhook = async (req, res) => {
     }
 
     const sig = req.headers['stripe-signature'];
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
     // req.body là Buffer (raw body) — xem index.js: route webhook được bỏ qua express.json()
     // vì Stripe tính chữ ký trên chuỗi byte gốc, không phải trên object đã parse.
+    // Luôn xác thực chữ ký: không còn chế độ "chấp nhận sự kiện không ký" — nếu có, bất kỳ ai cũng có thể
+    // gửi một sự kiện giả để đánh dấu đơn "đã thanh toán".
     let event;
     try {
-        if (webhookSecret) {
-            event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-        } else {
-            // For testing without webhook secret
-            event = JSON.parse(Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body));
-        }
+        event = stripe.webhooks.constructEvent(req.body, sig, config.stripeWebhookSecret);
     } catch (err) {
         console.error('Webhook signature verification failed:', err.message);
         return res.status(400).send(`Webhook Error: ${err.message}`);

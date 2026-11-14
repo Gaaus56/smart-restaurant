@@ -4,6 +4,7 @@
  */
 
 const db = require("../db");
+const config = require("../config");
 
 /**
  * GET /api/admin/tables
@@ -117,7 +118,7 @@ exports.create = async (req, res, next) => {
       };
       const token = jwt.sign(
         payload,
-        process.env.QR_JWT_SECRET || "qr_secret_key",
+        config.qrJwtSecret,
         { expiresIn: "30d" }
       );
       

@@ -6,6 +6,7 @@
 const express = require("express");
 const router = express.Router();
 const jwt = require("jsonwebtoken");
+const config = require("../config");
 const db = require("../db");
 const customerController = require("../controllers/customer.controller");
 const upload = require("../middleware/uploadMiddleware");
@@ -17,7 +18,7 @@ const verifyToken = async (req, res, next) => {
     if (!authHeader) return res.status(401).json({ message: "No token" });
 
     const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret");
+    const decoded = jwt.verify(token, config.jwtSecret);
     
     // Check active
     const { rows } = await db.query("SELECT id, status FROM users WHERE id = $1", [decoded.userId]);
