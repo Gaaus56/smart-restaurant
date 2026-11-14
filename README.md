@@ -23,3 +23,12 @@ Xây dựng giải pháp toàn diện bao gồm:
 - **Backend**: Node.js, Express, PostgreSQL
 - **Frontend**: Next.js (hoặc React Vite), TailwindCSS
 - **Real-time**: Socket.IO
+
+## 🔒 Xử lý đồng thời & kiểm thử tải
+
+Backend đã được kiểm thử với nhiều người dùng thao tác cùng lúc. Kết quả đo được (k6, 50 người dùng đồng thời):
+thông lượng gọi món **54 → 1.084 req/s**, tỉ lệ lỗi **7,2 % → 0 %**, p95 **9,99 s → 52 ms**.
+Các khắc phục chính: chống deadlock do cạn connection pool, khoá theo bàn chống tạo đơn trùng,
+thanh toán/webhook Stripe idempotent, trừ điểm thưởng nguyên tử, ràng buộc bất biến ở tầng CSDL.
+
+Chi tiết lỗi, giải pháp, số liệu trước/sau và cách tái hiện: [docs/CONCURRENCY.md](docs/CONCURRENCY.md).
