@@ -44,9 +44,9 @@ services:
       PORT: 4000
       NODE_ENV: production
       
-      # JWT
-      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key}
-      QR_JWT_SECRET: ${QR_JWT_SECRET:-your-qr-secret-key}
+      # JWT — bắt buộc đặt trong .env (không có giá trị mặc định; backend từ chối khởi động nếu thiếu/yếu)
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env - see .env.docker.example}
+      QR_JWT_SECRET: ${QR_JWT_SECRET:?Set QR_JWT_SECRET in .env - see .env.docker.example}
       
       # Client URL - QUAN TRỌNG cho QR code
       # Thay bằng domain thật khi deploy

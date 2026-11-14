@@ -170,14 +170,19 @@ Scroll xuống phần **"Environment Variables"**, click **"Add Environment Vari
 DATABASE_URL = postgres://...?sslmode=require  (URL từ bước 1.2.3)
 PORT = 4000
 NODE_ENV = production
-JWT_SECRET = smart-restaurant-jwt-secret-2024-production
-QR_JWT_SECRET = smart-restaurant-qr-secret-2024
+JWT_SECRET = <chuỗi ngẫu nhiên — xem lệnh tạo bên dưới>
+QR_JWT_SECRET = <chuỗi ngẫu nhiên KHÁC — tạo lần 2>
 CLIENT_BASE_URL = https://your-app.vercel.app
 EMAIL_SERVICE = gmail
 EMAIL_USER = your-email@gmail.com
 EMAIL_PASS = your-gmail-app-password
 GOOGLE_CLIENT_ID = your-google-client-id.apps.googleusercontent.com
 ```
+
+> ⚠️ `JWT_SECRET` và `QR_JWT_SECRET` là **bắt buộc**: tối thiểu 32 ký tự, ngẫu nhiên, khác nhau.
+> Backend **từ chối khởi động** nếu thiếu, quá ngắn, dễ đoán hoặc trùng giá trị mẫu. Tạo mỗi secret bằng:
+> `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+> Nếu bật Stripe (`STRIPE_SECRET_KEY`) thì bắt buộc đặt thêm `STRIPE_WEBHOOK_SECRET`.
 
 > ⚠️ **Tạm thời**: `CLIENT_BASE_URL` sẽ cập nhật sau khi có URL Vercel
 

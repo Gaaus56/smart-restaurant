@@ -34,6 +34,11 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const runId = `cc${Date.now().toString(36)}`;
 let ipSeq = 0;
 
+function requireEnv(name) {
+  if (!process.env[name]) throw new Error(`Thiếu biến môi trường ${name} (phải trùng với server đang chạy).`);
+  return process.env[name];
+}
+
 function nextIp() {
   ipSeq += 1;
   return `10.${(ipSeq >> 16) & 255}.${(ipSeq >> 8) & 255}.${ipSeq & 255}`;
@@ -255,7 +260,7 @@ async function scenarioPointsOverspend() {
   const orderId = await createServedOrder(table.id, guest.id);
   const token = jwt.sign(
     { userId: guest.id, email: guest.email, role: "guest" },
-    process.env.JWT_SECRET || "secret",
+    requireEnv("JWT_SECRET"),
     { expiresIn: "10m" }
   );
 

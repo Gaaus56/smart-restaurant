@@ -5,6 +5,7 @@
 
 const db = require("../db");
 const jwt = require("jsonwebtoken");
+const config = require("../config");
 const QRCode = require("qrcode");
 const PDFDocument = require("pdfkit");
 const archiver = require("archiver");
@@ -33,7 +34,7 @@ exports.verify = async (req, res, next) => {
     // Verify JWT token
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.QR_JWT_SECRET || "qr_secret_key");
+      decoded = jwt.verify(token, config.qrJwtSecret);
     } catch (err) {
       return res.json({
         valid: false,
@@ -198,7 +199,7 @@ exports.generate = async (req, res, next) => {
     };
     const token = jwt.sign(
       payload,
-      process.env.QR_JWT_SECRET || "qr_secret_key",
+      config.qrJwtSecret,
       { expiresIn: "30d" }
     );
     const url = buildQrUrl(table.id, token);
@@ -319,7 +320,7 @@ exports.regenerateAll = async (req, res, next) => {
 
       const newToken = jwt.sign(
         payload,
-        process.env.QR_JWT_SECRET || "qr_secret_key",
+        config.qrJwtSecret,
         { expiresIn: "30d" }
       );
 

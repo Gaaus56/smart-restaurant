@@ -81,9 +81,11 @@ IPv4 Address. . . . . . . . . . . : 192.168.1.7
 # ⚠️ Thay YOUR_PASSWORD bằng mật khẩu PostgreSQL của bạn!
 DATABASE_URL=postgres://postgres:YOUR_PASSWORD@localhost:5432/smart_restaurant
 
-# === JWT SECRETS ===
-JWT_SECRET=smart-restaurant-jwt-secret-key-2024
-QR_JWT_SECRET=qr_secret_key
+# === JWT SECRETS (BẮT BUỘC) ===
+# Tối thiểu 32 ký tự, ngẫu nhiên, hai secret khác nhau — backend từ chối khởi động nếu thiếu/yếu.
+# Tạo mỗi secret: node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+JWT_SECRET=<dán chuỗi ngẫu nhiên thứ nhất>
+QR_JWT_SECRET=<dán chuỗi ngẫu nhiên thứ hai>
 
 # === QR CODE - QUAN TRỌNG cho điện thoại quét ===
 # ⚠️ Thay YOUR_IP bằng IP máy tính (ví dụ: 192.168.1.7)

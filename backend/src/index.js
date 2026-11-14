@@ -4,6 +4,15 @@ const http = require("http");
 const helmet = require("helmet");
 require("dotenv").config();
 
+// Fail-fast: kiểm tra secret trước khi nạp bất kỳ route nào — thiếu/yếu secret thì dừng với thông báo rõ ràng.
+try {
+  require("./config");
+} catch (err) {
+  if (err.code !== "INVALID_CONFIG") throw err;
+  console.error(`❌ ${err.message}`);
+  process.exit(1);
+}
+
 const { initSocket } = require("./socket");
 const {
   apiLimiter,

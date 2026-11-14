@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const config = require('../config');
 
 const requireAuth = (req, res, next) => {
   // Check token from header first, then query string (for downloads)
@@ -15,7 +16,7 @@ const requireAuth = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+    const decoded = jwt.verify(token, config.jwtSecret);
     req.user = decoded; 
     next();
   } catch (err) {
@@ -50,7 +51,7 @@ const requireCustomer = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+    const decoded = jwt.verify(token, config.jwtSecret);
     
     // Support both token types:
     // 1. customerAuth token: { customerId, type: 'customer' }
@@ -84,7 +85,7 @@ const optionalCustomer = (req, res, next) => {
 
   if (token) {
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+      const decoded = jwt.verify(token, config.jwtSecret);
       
       console.log('🔍 optionalCustomer - decoded token:', decoded);
       
