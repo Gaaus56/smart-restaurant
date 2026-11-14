@@ -1,10 +1,18 @@
 require("./helpers");
+const crypto = require("crypto");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { validate, load, MIN_SECRET_LENGTH } = require("../../src/config");
+const {
+  validate,
+  load,
+  estimateEntropyBits,
+  MIN_SECRET_LENGTH,
+  MIN_SECRET_ENTROPY_BITS,
+} = require("../../src/config");
 
-const strong = (ch) => ch.repeat(MIN_SECRET_LENGTH);
-const valid = { JWT_SECRET: strong("a"), QR_JWT_SECRET: strong("b") };
+/** Secret ngẫu nhiên đúng chuẩn khuyến nghị (openssl rand -hex 32). */
+const random = () => crypto.randomBytes(32).toString("hex");
+const valid = { JWT_SECRET: random(), QR_JWT_SECRET: random() };
 
 test("cấu hình hợp lệ không có lỗi", () => {
   assert.deepEqual(validate(valid), []);
@@ -29,13 +37,34 @@ test("giá trị mẫu trong file .env.example bị từ chối", () => {
 });
 
 test(`secret ngắn hơn ${MIN_SECRET_LENGTH} ký tự bị từ chối`, () => {
-  const errors = validate({ ...valid, QR_JWT_SECRET: "x".repeat(MIN_SECRET_LENGTH - 1) });
+  const errors = validate({ ...valid, QR_JWT_SECRET: random().slice(0, MIN_SECRET_LENGTH - 1) });
   assert.equal(errors.length, 1);
   assert.match(errors[0], /ít nhất/);
 });
 
+for (const [label, weak] of [
+  ["một ký tự lặp lại", "a".repeat(64)],
+  ["mẫu ngắn lặp lại", "abcd".repeat(16)],
+  ["chỉ có 2 loại ký tự", "01".repeat(40)],
+]) {
+  test(`secret đủ dài nhưng dễ đoán (${label}) bị từ chối`, () => {
+    const errors = validate({ ...valid, JWT_SECRET: weak });
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /quá dễ đoán/);
+  });
+}
+
+test(`ước lượng entropy: secret sinh bằng crypto vượt ngưỡng ${MIN_SECRET_ENTROPY_BITS} bit`, () => {
+  for (let i = 0; i < 20; i += 1) {
+    assert.ok(estimateEntropyBits(random()) >= MIN_SECRET_ENTROPY_BITS);
+    assert.ok(estimateEntropyBits(crypto.randomBytes(32).toString("base64")) >= MIN_SECRET_ENTROPY_BITS);
+  }
+  assert.equal(estimateEntropyBits("a".repeat(100)), 0);
+});
+
 test("hai secret trùng nhau bị từ chối", () => {
-  const errors = validate({ JWT_SECRET: strong("c"), QR_JWT_SECRET: strong("c") });
+  const same = random();
+  const errors = validate({ JWT_SECRET: same, QR_JWT_SECRET: same });
   assert.deepEqual(errors, ["JWT_SECRET và QR_JWT_SECRET phải khác nhau."]);
 });
 
