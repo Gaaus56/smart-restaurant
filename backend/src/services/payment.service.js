@@ -17,13 +17,26 @@ const VND_PER_POINT = 10000;
  * @returns {{ order, alreadyPaid: boolean, pointsAwarded: number, tableNumber }}
  */
 async function markOrderPaid(client, orderId) {
+  // THỨ TỰ KHOÁ: luôn khoá BÀN trước rồi mới khoá ĐƠN — giống luồng gọi món (orders.create).
+  // Nếu hai luồng khoá ngược thứ tự (gọi món: bàn → đơn, thanh toán: đơn → bàn), khách gọi thêm món
+  // đúng lúc đơn đang được thanh toán sẽ gây deadlock và PostgreSQL huỷ một trong hai giao dịch.
+  // table_id của một đơn không bao giờ đổi nên đọc trước (không khoá) là an toàn.
+  const { rows: found } = await client.query("SELECT table_id FROM orders WHERE id = $1", [orderId]);
+  if (found.length === 0) throw httpError(404, "Order not found");
+
+  let tableNumber = null;
+  if (found[0].table_id) {
+    const { rows: tables } = await client.query(
+      "SELECT table_number FROM tables WHERE id = $1 FOR UPDATE",
+      [found[0].table_id]
+    );
+    tableNumber = tables[0]?.table_number ?? null;
+  }
+
   // Khoá dòng đơn hàng: các yêu cầu thanh toán đồng thời cho cùng một đơn chạy tuần tự.
   // Yêu cầu đến sau phải chờ yêu cầu trước COMMIT rồi mới đọc lại trạng thái → thấy 'paid'.
   const { rows } = await client.query("SELECT * FROM orders WHERE id = $1 FOR UPDATE", [orderId]);
-  if (rows.length === 0) throw httpError(404, "Order not found");
-
   const current = rows[0];
-  const tableNumber = await findTableNumber(client, current.table_id);
 
   if (current.status === "paid") {
     return { order: current, alreadyPaid: true, pointsAwarded: 0, tableNumber };
@@ -57,12 +70,6 @@ async function markOrderPaid(client, orderId) {
   }
 
   return { order, alreadyPaid: false, pointsAwarded, tableNumber };
-}
-
-async function findTableNumber(client, tableId) {
-  if (!tableId) return null;
-  const { rows } = await client.query("SELECT table_number FROM tables WHERE id = $1", [tableId]);
-  return rows[0]?.table_number ?? null;
 }
 
 module.exports = { markOrderPaid, VND_PER_POINT };
