@@ -20,9 +20,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
-      - run: npm ci
+      # package-lock.json bị .gitignore của repo bỏ qua → dùng npm install thay cho npm ci
+      - run: npm install --no-audit --no-fund
       - run: npm run test:coverage
 
   concurrency:
@@ -51,9 +50,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
-      - run: npm ci
+      # package-lock.json bị .gitignore của repo bỏ qua → dùng npm install thay cho npm ci
+      - run: npm install --no-audit --no-fund
       - name: Generate per-run secrets
         run: |
           echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
