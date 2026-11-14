@@ -34,6 +34,8 @@ const KNOWN_WEAK_SECRETS = new Set([
   "your-super-secret-jwt-key-change-this",
   "your-qr-secret-key",
   "smart-restaurant-jwt-secret-key-2024",
+  "smart-restaurant-jwt-secret-2024-production", // từng ghi công khai trong DEPLOYMENT_GUIDE.md
+  "smart-restaurant-qr-secret-2024",
   "change-me",
 ]);
 

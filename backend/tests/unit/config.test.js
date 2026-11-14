@@ -36,6 +36,12 @@ test("giá trị mẫu trong file .env.example bị từ chối", () => {
   assert.equal(errors.length, 1);
 });
 
+test("secret từng ghi công khai trong DEPLOYMENT_GUIDE.md bị từ chối (dù đủ dài)", () => {
+  const errors = validate({ JWT_SECRET: "smart-restaurant-jwt-secret-2024-production", QR_JWT_SECRET: random() });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /giá trị mẫu\/mặc định/);
+});
+
 test(`secret ngắn hơn ${MIN_SECRET_LENGTH} ký tự bị từ chối`, () => {
   const errors = validate({ ...valid, QR_JWT_SECRET: random().slice(0, MIN_SECRET_LENGTH - 1) });
   assert.equal(errors.length, 1);
