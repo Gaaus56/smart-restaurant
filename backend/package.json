@@ -7,7 +7,9 @@
     "dev": "nodemon src/index.js",
     "migrate": "node migrate.js",
     "seed": "node seed.js",
-    "start": "node migrate.js && node seed.js && node src/index.js"
+    "start": "node migrate.js && node seed.js && node src/index.js",
+    "test:concurrency": "node tests/concurrency/run.js",
+    "loadtest:prepare": "node loadtest/prepare-tables.js"
   },
   "dependencies": {
     "@faker-js/faker": "^10.2.0",

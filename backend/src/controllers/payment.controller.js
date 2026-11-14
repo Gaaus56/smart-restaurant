@@ -6,6 +6,7 @@
 
 const db = require("../db");
 const { getIO } = require("../socket");
+const { markOrderPaid } = require("../services/payment.service");
 
 // Stripe initialization (optional - only if STRIPE_SECRET_KEY is set)
 let stripe = null;
@@ -145,60 +146,24 @@ exports.requestPayment = async (req, res, next) => {
  * Process payment for an order (confirmed by waiter or auto)
  */
 exports.processPayment = async (req, res, next) => {
-    const client = await db.pool.connect();
     try {
-        await client.query('BEGIN');
         const { id } = req.params;
-        const { method } = req.body; // 'cash', 'momo', 'zalopay', 'stripe'
-
-        // Update Order Status -> paid/completed
-        const updateRes = await client.query(
-            "UPDATE orders SET status = 'paid', paid_at = NOW() WHERE id = $1 RETURNING *",
-            [id]
+        const { order, alreadyPaid, tableNumber } = await db.withTransaction((client) =>
+            markOrderPaid(client, id)
         );
-        if (updateRes.rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: 'Order not found' });
-        }
-        const order = updateRes.rows[0];
 
-        // Cộng điểm thưởng cho khách hàng nếu có user_id
-        if (order.user_id) {
-            // Quy đổi: 1 điểm cho mỗi 10.000đ (có thể điều chỉnh)
-            const amount = parseFloat(order.total_amount) || 0;
-            const addPoints = Math.floor(amount / 10000);
-            if (addPoints > 0) {
-                await client.query(
-                    "UPDATE users SET total_points = COALESCE(total_points,0) + $1 WHERE id = $2",
-                    [addPoints, order.user_id]
-                );
-            }
+        // Bấm "thanh toán" lần 2 cho cùng một đơn: trả lại kết quả cũ, không cộng điểm thêm.
+        if (alreadyPaid) {
+            return res.json({ message: 'Order already paid', order, alreadyPaid: true });
         }
 
-        // Get table number
-        const tableRes = await client.query(
-            "SELECT table_number FROM tables WHERE id = $1",
-            [order.table_id]
-        );
-        const tableNumber = tableRes.rows[0]?.table_number;
-
-        // Free up the table (set status to 'active' - empty/available)
-        if (order.table_id) {
-            await client.query(
-                "UPDATE tables SET status = 'active', updated_at = NOW() WHERE id = $1",
-                [order.table_id]
-            );
-        }
-
-        await client.query('COMMIT');
-
-        // Socket: Báo cho mọi người biết đơn hàng đã được thanh toán
+        // Socket: Báo cho mọi người biết đơn hàng đã được thanh toán (sau khi COMMIT)
         try {
             const io = getIO();
-            io.to(`table:${order.table_id}`).emit('order:paid', { 
-                orderId: order.id, 
+            io.to(`table:${order.table_id}`).emit('order:paid', {
+                orderId: order.id,
                 tableNumber,
-                message: 'Thanh toán thành công! Vui lòng đánh giá món ăn.' 
+                message: 'Thanh toán thành công! Vui lòng đánh giá món ăn.'
             });
             io.to('role:waiter').emit('order:paid', order);
             io.to('role:admin').emit('table:freed', { tableId: order.table_id });
@@ -208,10 +173,7 @@ exports.processPayment = async (req, res, next) => {
 
         res.json({ message: 'Payment successful', order });
     } catch (err) {
-        await client.query('ROLLBACK');
         next(err);
-    } finally {
-        client.release();
     }
 };
 
@@ -329,56 +291,20 @@ exports.generateVietQR = async (req, res, next) => {
  * Customer confirms VietQR payment (auto-confirm, notify waiter to print bill)
  */
 exports.confirmVietQR = async (req, res, next) => {
-    const client = await db.pool.connect();
     try {
-        await client.query('BEGIN');
         const { orderId } = req.body;
 
         if (!orderId) {
             return res.status(400).json({ message: 'Order ID is required' });
         }
 
-        // Update order to paid
-        const updateRes = await client.query(
-            "UPDATE orders SET status = 'paid', paid_at = NOW() WHERE id = $1 RETURNING *",
-            [orderId]
+        const { order, alreadyPaid, tableNumber } = await db.withTransaction((client) =>
+            markOrderPaid(client, orderId)
         );
 
-        if (updateRes.rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: 'Order not found' });
+        if (alreadyPaid) {
+            return res.json({ success: true, message: 'Order already paid', order, alreadyPaid: true });
         }
-
-        const order = updateRes.rows[0];
-
-        // Add loyalty points if user is logged in
-        if (order.user_id) {
-            const amount = parseFloat(order.total_amount) || 0;
-            const addPoints = Math.floor(amount / 10000);
-            if (addPoints > 0) {
-                await client.query(
-                    "UPDATE users SET total_points = COALESCE(total_points,0) + $1 WHERE id = $2",
-                    [addPoints, order.user_id]
-                );
-            }
-        }
-
-        // Get table info
-        const tableRes = await client.query(
-            "SELECT table_number FROM tables WHERE id = $1",
-            [order.table_id]
-        );
-        const tableNumber = tableRes.rows[0]?.table_number;
-
-        // Free up table
-        if (order.table_id) {
-            await client.query(
-                "UPDATE tables SET status = 'active', updated_at = NOW() WHERE id = $1",
-                [order.table_id]
-            );
-        }
-
-        await client.query('COMMIT');
 
         // Notify via socket
         try {
@@ -404,10 +330,7 @@ exports.confirmVietQR = async (req, res, next) => {
 
         res.json({ success: true, message: 'Payment confirmed', order });
     } catch (err) {
-        await client.query('ROLLBACK');
         next(err);
-    } finally {
-        client.release();
     }
 };
 
@@ -510,14 +433,15 @@ exports.handleStripeWebhook = async (req, res) => {
     const sig = req.headers['stripe-signature'];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
+    // req.body là Buffer (raw body) — xem index.js: route webhook được bỏ qua express.json()
+    // vì Stripe tính chữ ký trên chuỗi byte gốc, không phải trên object đã parse.
     let event;
-
     try {
         if (webhookSecret) {
             event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
         } else {
             // For testing without webhook secret
-            event = req.body;
+            event = JSON.parse(Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body));
         }
     } catch (err) {
         console.error('Webhook signature verification failed:', err.message);
@@ -528,49 +452,19 @@ exports.handleStripeWebhook = async (req, res) => {
     if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
         const orderId = session.metadata?.orderId;
-        const tableNumber = session.metadata?.tableNumber;
-        const tableId = session.metadata?.tableId;
 
-        if (orderId) {
-            const client = await db.pool.connect();
+        if (orderId && session.payment_status === 'paid') {
             try {
-                await client.query('BEGIN');
-
-                // Update order to paid
-                const updateRes = await client.query(
-                    "UPDATE orders SET status = 'paid', paid_at = NOW() WHERE id = $1 RETURNING *",
-                    [orderId]
+                // Stripe có thể gửi lại cùng một sự kiện nhiều lần (at-least-once delivery):
+                // markOrderPaid idempotent nên chỉ lần đầu tiên chuyển trạng thái và cộng điểm.
+                const { order, alreadyPaid, tableNumber } = await db.withTransaction((client) =>
+                    markOrderPaid(client, orderId)
                 );
 
-                if (updateRes.rowCount > 0) {
-                    const order = updateRes.rows[0];
-
-                    // Add loyalty points
-                    if (order.user_id) {
-                        const amount = parseFloat(order.total_amount) || 0;
-                        const addPoints = Math.floor(amount / 10000);
-                        if (addPoints > 0) {
-                            await client.query(
-                                "UPDATE users SET total_points = COALESCE(total_points,0) + $1 WHERE id = $2",
-                                [addPoints, order.user_id]
-                            );
-                        }
-                    }
-
-                    // Free up table
-                    if (order.table_id) {
-                        await client.query(
-                            "UPDATE tables SET status = 'active', updated_at = NOW() WHERE id = $1",
-                            [order.table_id]
-                        );
-                    }
-
-                    await client.query('COMMIT');
-
-                    // Notify via socket
+                if (!alreadyPaid) {
                     try {
                         const io = getIO();
-                        io.to(`table:${tableId}`).emit('order:paid', {
+                        io.to(`table:${order.table_id}`).emit('order:paid', {
                             orderId,
                             tableNumber,
                             message: 'Thanh toán thành công! Vui lòng đánh giá món ăn.'
@@ -578,22 +472,23 @@ exports.handleStripeWebhook = async (req, res) => {
                         io.to('role:waiter').emit('payment:completed', {
                             orderId,
                             tableNumber,
-                            tableId,
+                            tableId: order.table_id,
                             method: 'stripe',
                             message: `Bàn ${tableNumber} đã thanh toán Stripe - In bill`
                         });
-                        io.to('role:admin').emit('table:freed', { tableId });
+                        io.to('role:admin').emit('table:freed', { tableId: order.table_id });
                     } catch (e) {
                         console.error('Socket error:', e);
                     }
-
                     console.log(`✅ Stripe payment completed for order ${orderId}`);
                 }
             } catch (err) {
-                await client.query('ROLLBACK');
                 console.error('Error processing Stripe webhook:', err);
-            } finally {
-                client.release();
+                // Lỗi nghiệp vụ vĩnh viễn (đơn không tồn tại / đã huỷ): gửi lại cũng vô ích → báo đã nhận.
+                // Lỗi bất ngờ (mất kết nối DB…): trả 500 để Stripe tự gửi lại — an toàn vì đã idempotent.
+                if (!err.status || err.status >= 500) {
+                    return res.status(500).json({ received: false });
+                }
             }
         }
     }
