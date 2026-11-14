@@ -65,7 +65,12 @@ app.use(
   })
 );
 app.options("*", cors());
-app.use(express.json());
+
+// Webhook Stripe cần RAW body để xác thực chữ ký → không parse JSON cho route này
+// (route tự dùng express.raw()). Nếu express.json() chạy trước, mọi webhook hợp lệ đều bị từ chối.
+const STRIPE_WEBHOOK_PATH = "/api/payment/stripe/webhook";
+const jsonParser = express.json();
+app.use((req, res, next) => (req.path === STRIPE_WEBHOOK_PATH ? next() : jsonParser(req, res, next)));
 
 // Apply general rate limiter to all API routes
 app.use("/api/", apiLimiter);

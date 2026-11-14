@@ -29,7 +29,7 @@ DROP TABLE IF EXISTS users CASCADE;
         -- Các cột phục vụ Google Login & Khách hàng
         auth_provider VARCHAR(20) DEFAULT 'local',
         google_id VARCHAR(255),
-        total_points INT DEFAULT 0,
+        total_points INT DEFAULT 0 CHECK (total_points >= 0),
         tier VARCHAR(50) DEFAULT 'Bronze',
         
         -- Token khôi phục mật khẩu
@@ -152,6 +152,9 @@ DROP TABLE IF EXISTS users CASCADE;
       );
       CREATE INDEX IF NOT EXISTS idx_orders_table ON orders(table_id);
       CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+      -- Mỗi bàn chỉ có tối đa 1 đơn đang mở (chưa thanh toán / chưa huỷ).
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_one_open_per_table
+        ON orders(table_id) WHERE status NOT IN ('paid', 'cancelled');
     
       CREATE TABLE IF NOT EXISTS order_items (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

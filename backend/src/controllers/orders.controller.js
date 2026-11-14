@@ -54,114 +54,91 @@ exports.getAll = async (req, res, next) => {
  * Create a new order OR add to existing unpaid order
  */
 exports.create = async (req, res, next) => {
-  const client = await db.pool.connect();
+  // Support both old format (table_id) and new format (tableId)
+  const { table_id, tableId, items, customer_name, customerId, notes } = req.body;
+  const finalTableId = tableId || table_id;
+
+  if (!finalTableId) {
+    return res.status(400).json({ message: "Missing tableId" });
+  }
+
+  let result;
   try {
-    // Support both old format (table_id) and new format (tableId)
-    const { table_id, tableId, items, customer_name, customerId, notes } = req.body;
-    const finalTableId = tableId || table_id;
-
-    if (!finalTableId) {
-      return res.status(400).json({ message: "Missing tableId" });
-    }
-
-    const tableRes = await db.query("SELECT id, table_number FROM tables WHERE id = $1", [
-      finalTableId,
-    ]);
-    if (tableRes.rowCount === 0)
-      return res.status(404).json({ message: "Table not found" });
-    const tableNumber = tableRes.rows[0].table_number;
-
-    await client.query("BEGIN");
-
-    // Check if there's an existing unpaid order for this table
-    const existingOrderRes = await client.query(
-      `SELECT id, total_amount, user_id FROM orders 
-       WHERE table_id = $1 AND status NOT IN ('paid', 'cancelled')
-       ORDER BY created_at DESC LIMIT 1`,
-      [finalTableId]
-    );
-
-    let orderId;
-    let isNewOrder = false;
-
-    if (existingOrderRes.rowCount > 0) {
-      // Add to existing order
-      orderId = existingOrderRes.rows[0].id;
-      console.log(`Adding items to existing order ${orderId}`);
-      
-      // If existing order doesn't have user_id but we have one now, update it
-      const existingUserId = existingOrderRes.rows[0].user_id;
-      const currentUserId = customerId || (req.customer?.userId) || null;
-      
-      if (!existingUserId && currentUserId) {
-        await client.query(
-          `UPDATE orders SET user_id = $1 WHERE id = $2`,
-          [currentUserId, orderId]
-        );
-        console.log(`Updated order ${orderId} with user ${currentUserId}`);
-      }
-    } else {
-      // Create new order
-      isNewOrder = true;
-      // Priority: customerId from body > userId from auth token > null
-      const finalUserId = customerId || (req.customer?.userId) || null;
-      const orderRes = await client.query(
-        `INSERT INTO orders (table_id, user_id, customer_name, total_amount, notes, status) 
-         VALUES ($1, $2, $3, 0, $4, 'pending') RETURNING id, created_at`,
-        [
-          finalTableId,
-          finalUserId,
-          customer_name || "Guest",
-          notes,
-        ]
+    result = await db.withTransaction(async (client) => {
+      // Khoá dòng của bàn (FOR UPDATE): các request gọi món cho CÙNG một bàn được xếp hàng
+      // tuần tự, request sau chỉ tìm đơn mở SAU KHI request trước đã COMMIT. Nhờ vậy hai khách
+      // cùng bàn bấm "Gọi món" cùng lúc sẽ được gộp vào một đơn thay vì tạo hai đơn trùng.
+      // Các bàn khác nhau không chặn nhau.
+      const tableRes = await client.query(
+        "SELECT id, table_number FROM tables WHERE id = $1 FOR UPDATE",
+        [finalTableId]
       );
-      orderId = orderRes.rows[0].id;
-      console.log(`Created new order ${orderId} for user ${finalUserId}`);
-    }
+      if (tableRes.rowCount === 0) throw db.httpError(404, "Table not found");
+      const tableNumber = tableRes.rows[0].table_number;
 
-    let grandTotal = 0;
-    const processedItems = [];
+      // Check if there's an existing unpaid order for this table
+      const existingOrderRes = await client.query(
+        `SELECT id, total_amount, user_id FROM orders
+         WHERE table_id = $1 AND status NOT IN ('paid', 'cancelled')
+         ORDER BY created_at DESC LIMIT 1`,
+        [finalTableId]
+      );
 
-    if (items && items.length > 0) {
-      for (const item of items) {
+      let orderId;
+      let isNewOrder = false;
+      const currentUserId = customerId || req.customer?.userId || null;
+
+      if (existingOrderRes.rowCount > 0) {
+        // Add to existing order
+        orderId = existingOrderRes.rows[0].id;
+
+        // If existing order doesn't have user_id but we have one now, update it
+        if (!existingOrderRes.rows[0].user_id && currentUserId) {
+          await client.query(`UPDATE orders SET user_id = $1 WHERE id = $2`, [currentUserId, orderId]);
+        }
+      } else {
+        // Create new order
+        isNewOrder = true;
+        const orderRes = await client.query(
+          `INSERT INTO orders (table_id, user_id, customer_name, total_amount, notes, status)
+           VALUES ($1, $2, $3, 0, $4, 'pending') RETURNING id, created_at`,
+          [finalTableId, currentUserId, customer_name || "Guest", notes]
+        );
+        orderId = orderRes.rows[0].id;
+      }
+
+      let grandTotal = 0;
+      const processedItems = [];
+
+      for (const item of items || []) {
         // Support both old format (menu_item_id) and new format (itemId)
         const itemId = item.itemId || item.menu_item_id;
-        const itemRes = await client.query(
-          "SELECT price, name FROM menu_items WHERE id = $1",
-          [itemId]
-        );
-        if (itemRes.rowCount === 0)
-          throw new Error(`Item ${itemId} not found`);
+        // Giá luôn lấy từ CSDL, không tin giá do client gửi lên.
+        const itemRes = await client.query("SELECT price, name FROM menu_items WHERE id = $1", [itemId]);
+        if (itemRes.rowCount === 0) throw db.httpError(400, `Item ${itemId} not found`);
 
         const basePrice = parseFloat(itemRes.rows[0].price);
-        let modifiersPrice = 0;
+        const modifiersPrice = Array.isArray(item.modifiers)
+          ? item.modifiers.reduce((sum, mod) => sum + parseFloat(mod.price || 0), 0)
+          : 0;
+        const lineTotal = (basePrice + modifiersPrice) * item.quantity;
+        grandTotal += lineTotal;
 
-        if (item.modifiers && Array.isArray(item.modifiers)) {
-          modifiersPrice = item.modifiers.reduce(
-            (sum, mod) => sum + parseFloat(mod.price || 0),
-          0
-        );
-      }
-
-      const unitTotal = basePrice + modifiersPrice;
-      const lineTotal = unitTotal * item.quantity;
-      grandTotal += lineTotal;
-
-      processedItems.push({
-        menu_item_id: itemId,
-        quantity: item.quantity,
-        name: itemRes.rows[0].name,
-        price_per_unit: basePrice,
-        total_price: lineTotal,
-        modifiers_json: JSON.stringify(item.modifiers || []),
-        notes: item.notes,
-      });
+        processedItems.push({
+          menu_item_id: itemId,
+          quantity: item.quantity,
+          name: itemRes.rows[0].name,
+          price_per_unit: basePrice,
+          total_price: lineTotal,
+          modifiers_json: JSON.stringify(item.modifiers || []),
+          notes: item.notes,
+        });
       }
 
       for (const pItem of processedItems) {
         await client.query(
           `INSERT INTO order_items (order_id, menu_item_id, quantity, price_per_unit, total_price, modifiers_selected, notes, status)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
           [
             orderId,
             pItem.menu_item_id,
@@ -173,63 +150,56 @@ exports.create = async (req, res, next) => {
           ]
         );
       }
-    }
 
-    // Update total amount
-    if (isNewOrder) {
-      await client.query(
-        "UPDATE orders SET total_amount = $1 WHERE id = $2",
-        [grandTotal, orderId]
-      );
-    } else if (grandTotal > 0) {
-      await client.query(
-        "UPDATE orders SET total_amount = total_amount + $1, updated_at = NOW() WHERE id = $2",
-        [grandTotal, orderId]
-      );
-    }
-
-    await client.query("COMMIT");
-
-    // --- SOCKET EMIT (REAL-TIME) ---
-    if (items && items.length > 0) {
-      try {
-        const io = getIO();
-        const eventType = isNewOrder ? "order:new" : "order:updated";
-        io.to("role:waiter").emit(eventType, {
-          orderId: orderId,
-          tableNumber: tableNumber,
-          tableId: finalTableId,
-          total: grandTotal,
-          items: processedItems,
-          isNewOrder,
-        });
-        io.to(`table:${finalTableId}`).emit("order:update", {
-          status: "pending",
-          orderId: orderId,
-        });
-      } catch (sErr) {
-        console.error("Socket emit error:", sErr.message);
+      if (grandTotal > 0) {
+        // Cộng dồn nguyên tử trên CSDL, không ghi đè bằng giá trị đã đọc trước đó.
+        await client.query(
+          "UPDATE orders SET total_amount = total_amount + $1, updated_at = NOW() WHERE id = $2",
+          [grandTotal, orderId]
+        );
       }
-    }
-    // -------------------------------
 
-    res.status(201).json({
-      data: {
-        order_id: orderId,
-        id: orderId,
-        total: grandTotal,
-        status: "pending",
-        is_new_order: isNewOrder,
-      },
-      message: isNewOrder ? "Order placed successfully" : "Items added to existing order",
+      return { orderId, isNewOrder, grandTotal, processedItems, tableNumber };
     });
   } catch (err) {
-    await client.query("ROLLBACK");
-    next(err);
-  } finally {
-    client.release();
+    return next(err);
   }
-}
+
+  const { orderId, isNewOrder, grandTotal, processedItems, tableNumber } = result;
+
+  // --- SOCKET EMIT (REAL-TIME) — chỉ phát SAU KHI đã COMMIT ---
+  if (processedItems.length > 0) {
+    try {
+      const io = getIO();
+      const eventType = isNewOrder ? "order:new" : "order:updated";
+      io.to("role:waiter").emit(eventType, {
+        orderId: orderId,
+        tableNumber: tableNumber,
+        tableId: finalTableId,
+        total: grandTotal,
+        items: processedItems,
+        isNewOrder,
+      });
+      io.to(`table:${finalTableId}`).emit("order:update", {
+        status: "pending",
+        orderId: orderId,
+      });
+    } catch (sErr) {
+      console.error("Socket emit error:", sErr.message);
+    }
+  }
+
+  res.status(201).json({
+    data: {
+      order_id: orderId,
+      id: orderId,
+      total: grandTotal,
+      status: "pending",
+      is_new_order: isNewOrder,
+    },
+    message: isNewOrder ? "Order placed successfully" : "Items added to existing order",
+  });
+};
 /**
  * PATCH /api/orders/:id/items
  * Add items to existing order
