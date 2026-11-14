@@ -10,6 +10,7 @@
  *   B. webhook-replay     cùng 1 sự kiện Stripe gửi lại M lần → chỉ cộng điểm 1 lần
  *   C. cash-double-pay    nhân viên bấm "thanh toán" M lần    → chỉ cộng điểm 1 lần
  *   D. points-overspend   khách dùng toàn bộ điểm M lần       → điểm không âm, chỉ trừ 1 lần
+ *   E. pay-while-ordering thanh toán lúc cùng bàn gọi thêm món → không deadlock, không mất món
  *
  * Mỗi request mang một X-Forwarded-For khác nhau (mô phỏng nhiều khách ở nhiều thiết bị),
  * nên rate limiter theo IP không che mất lỗi đồng thời.
@@ -25,7 +26,7 @@ const TABLES = Number(process.env.TABLES || 10);
 const BURST = Number(process.env.BURST || 20);
 const REPLAYS = Number(process.env.REPLAYS || 10);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 15000);
-const ONLY = (process.env.SCENARIOS || "A,B,C,D").split(",").map((s) => s.trim().toUpperCase());
+const ONLY = (process.env.SCENARIOS || "A,B,C,D,E").split(",").map((s) => s.trim().toUpperCase());
 const ORDER_TOTAL = 500000; // 500.000đ → 50 điểm (1 điểm / 10.000đ)
 const EXPECTED_POINTS = Math.floor(ORDER_TOTAL / 10000);
 
@@ -286,6 +287,68 @@ async function scenarioPointsOverspend() {
   };
 }
 
+/**
+ * E. Thanh toán đúng lúc khách cùng bàn gọi thêm món.
+ * Hai luồng cùng đụng vào dòng `tables` và dòng `orders`; nếu khoá theo thứ tự ngược nhau
+ * (gọi món: bàn → đơn, thanh toán: đơn → bàn) PostgreSQL sẽ phát hiện deadlock và huỷ một giao dịch.
+ */
+async function scenarioPayWhileOrdering() {
+  const ROUNDS = Number(process.env.ROUNDS || 30);
+  const ADDS = Number(process.env.ADDS || 4);
+  const item = await anyMenuItem();
+  const tableIds = [];
+  const results = [];
+
+  for (let round = 0; round < ROUNDS; round += 1) {
+    const table = await createTable(`E${round}`);
+    tableIds.push(table.id);
+    const { rows } = await pool.query(
+      "INSERT INTO orders (table_id, customer_name, status, total_amount) VALUES ($1, 'Concurrency test', 'served', 0) RETURNING id",
+      [table.id]
+    );
+    const burst = [call("POST", `/api/payment/orders/${rows[0].id}/pay`, { body: { method: "cash" } })];
+    for (let k = 0; k < ADDS; k += 1) {
+      burst.push(
+        call("POST", "/api/orders", { body: { tableId: table.id, items: [{ itemId: item.id, quantity: 1 }] } })
+      );
+    }
+    results.push(...(await Promise.all(burst)));
+  }
+
+  // Bất biến: tổng tiền mỗi đơn = tổng tiền các món của đơn đó; không món nào bị mất.
+  const { rows: wrongTotals } = await pool.query(
+    `SELECT o.id FROM orders o LEFT JOIN order_items oi ON oi.order_id = o.id
+      WHERE o.table_id = ANY($1)
+      GROUP BY o.id, o.total_amount
+     HAVING o.total_amount <> COALESCE(SUM(oi.total_price), 0)`,
+    [tableIds]
+  );
+  const { rows: saved } = await pool.query(
+    `SELECT COALESCE(SUM(oi.quantity), 0)::int AS n
+       FROM order_items oi JOIN orders o ON o.id = oi.order_id
+      WHERE o.table_id = ANY($1)`,
+    [tableIds]
+  );
+
+  const failed = results.filter((r) => r.status === "timeout" || r.status >= 500).length;
+  const deadlocks = results.filter((r) => /deadlock/i.test(r.body?.message || "")).length;
+  const added = results.filter((r) => r.status === 201).length;
+  return {
+    name: "E. pay-while-ordering",
+    requests: results.length,
+    http: statusCounts(results),
+    p95ms: percentile(results.map((r) => r.ms), 95),
+    metrics: {
+      rounds: ROUNDS,
+      failedRequests: failed,
+      deadlockErrors: deadlocks,
+      itemsSaved: `${saved[0].n}/${added}`,
+      ordersWithWrongTotal: wrongTotals.length,
+    },
+    pass: failed === 0 && added === ROUNDS * ADDS && saved[0].n === added && wrongTotals.length === 0,
+  };
+}
+
 // ─────────────────────────── Runner ───────────────────────────
 
 function percentile(values, p) {
@@ -308,7 +371,13 @@ async function main() {
   const health = await fetch(`${API_URL}/health`).catch(() => null);
   if (!health || !health.ok) throw new Error(`API không phản hồi tại ${API_URL}/health`);
 
-  const all = { A: scenarioDuplicateOrders, B: scenarioWebhookReplay, C: scenarioCashDoublePay, D: scenarioPointsOverspend };
+  const all = {
+    A: scenarioDuplicateOrders,
+    B: scenarioWebhookReplay,
+    C: scenarioCashDoublePay,
+    D: scenarioPointsOverspend,
+    E: scenarioPayWhileOrdering,
+  };
   const scenarios = ONLY.map((key) => all[key]).filter(Boolean);
   const report = [];
   try {

@@ -5,8 +5,8 @@
 
 ## 1. Tóm tắt
 
-Kiểm thử đồng thời phát hiện **6 lỗi** khiến hệ thống sai dữ liệu hoặc ngừng phục vụ khi nhiều người dùng thao tác cùng lúc.
-Sau khi sửa, cả 4 kịch bản kiểm thử đồng thời đều đạt và luồng gọi món chịu tải tốt hơn rõ rệt:
+Kiểm thử đồng thời phát hiện **7 lỗi** khiến hệ thống sai dữ liệu hoặc ngừng phục vụ khi nhiều người dùng thao tác cùng lúc.
+Sau khi sửa, cả 5 kịch bản kiểm thử đồng thời đều đạt và luồng gọi món chịu tải tốt hơn rõ rệt:
 
 | Chỉ số (k6, 50 người dùng đồng thời, 45 giây) | Trước | Sau |
 |---|---|---|
@@ -25,6 +25,7 @@ Sau khi sửa, cả 4 kịch bản kiểm thử đồng thời đều đạt và
 | 4 | **Thanh toán tiền mặt / VietQR không idempotent** | `processPayment`, `confirmVietQR` | Bấm "thanh toán" 2 lần → cộng điểm 2 lần |
 | 5 | **Tiêu lố điểm thưởng**: đọc số dư rồi mới trừ (check-then-act) | `usepoints.controller.js` | 10 request dùng 100 điểm cùng lúc → **cả 10 thành công, điểm còn −900** |
 | 6 | **Webhook Stripe luôn sai chữ ký**: `express.json()` toàn cục parse body trước khi tới `express.raw()` của route webhook | `index.js` | Khi cấu hình `STRIPE_WEBHOOK_SECRET`, **mọi webhook hợp lệ đều bị từ chối (400)** → thanh toán thẻ không bao giờ được tự động xác nhận |
+| 7 | **Deadlock do khoá ngược thứ tự** (phát hiện sau bản sửa đầu, nhờ review tự động): gọi món khoá *bàn → đơn*, thanh toán khoá *đơn → bàn* | `services/payment.service.js#markOrderPaid` | Thanh toán đúng lúc khách cùng bàn gọi thêm món → PostgreSQL huỷ một giao dịch: **89/150 request lỗi 500**, chỉ 10/30 lần thanh toán thành công |
 
 ## 3. Cách khắc phục
 
@@ -33,7 +34,7 @@ Sau khi sửa, cả 4 kịch bản kiểm thử đồng thời đều đạt và
   Mọi truy vấn trong giao dịch dùng `client` được truyền vào.
 - Pool có `connectionTimeoutMillis` (mặc định 5 s, cấu hình qua `PG_CONNECTION_TIMEOUT_MS`): nếu thật sự cạn connection
   thì request báo lỗi nhanh thay vì treo vô hạn. Kích thước pool cấu hình qua `PG_POOL_MAX`.
-- Kiểm chứng: chạy bộ test với `PG_POOL_MAX=3` và 200 request đồng thời → không deadlock, 4/4 kịch bản đạt.
+- Kiểm chứng: chạy bộ test với `PG_POOL_MAX=3` và 200 request đồng thời → không deadlock, 5/5 kịch bản đạt.
 
 ### 3.2 Khoá theo bàn khi gọi món (lỗi 2)
 ```sql
@@ -61,6 +62,19 @@ Ba luồng thanh toán dùng chung `services/payment.service.js#markOrderPaid`:
 Webhook: lỗi bất ngờ (vd. mất kết nối DB) trả **500 để Stripe gửi lại** — an toàn vì đã idempotent;
 lỗi nghiệp vụ vĩnh viễn (đơn không tồn tại/đã huỷ) trả 200 để Stripe không gửi lại vô ích.
 Chỉ xử lý khi `session.payment_status === 'paid'`.
+
+### 3.3b Thứ tự khoá thống nhất: bàn → đơn → người dùng (lỗi 7)
+Deadlock xảy ra khi hai giao dịch giữ khoá theo thứ tự ngược nhau:
+
+| Thời điểm | Gọi thêm món (bàn 5) | Thanh toán đơn của bàn 5 |
+|---|---|---|
+| t1 | khoá dòng `tables` (FOR UPDATE) | khoá dòng `orders` (FOR UPDATE) |
+| t2 | thêm `order_items` → cần khoá dòng `orders` (khoá khoá ngoại) → **chờ** | cập nhật `tables` → **chờ** |
+| t3 | PostgreSQL phát hiện vòng chờ sau `deadlock_timeout` (1 s) → huỷ một giao dịch | |
+
+Cách sửa: `markOrderPaid` đọc `table_id` (không khoá — giá trị này không bao giờ đổi), **khoá bàn trước** rồi mới khoá đơn,
+cùng thứ tự với luồng gọi món. Quy ước cho mọi giao dịch mới: **bàn → đơn → người dùng**.
+Không cần khoá cố định thứ tự giữa các bàn vì không giao dịch nào khoá hai bàn cùng lúc.
 
 ### 3.4 Trừ điểm nguyên tử (lỗi 5)
 ```sql
@@ -95,7 +109,10 @@ Mỗi lượt chạy trên server khởi động mới.
 | B. Webhook Stripe gửi lại | 10 lần, có chữ ký | Có chữ ký: **10/10 bị từ chối (400)**. Không chữ ký: **cộng điểm 10 lần** (500 thay vì 50) | 10/10 nhận, cộng điểm **1 lần** (50) |
 | C. Bấm thanh toán nhiều lần | 10 lần | Cộng điểm **10 lần** | Cộng điểm **1 lần** |
 | D. Dùng 100 điểm | 10 lần | 10/10 chấp nhận, điểm còn **−900**, giảm giá 1.000đ | 1 chấp nhận, 9 từ chối, điểm còn 0, giảm giá 100đ |
-| A–D với `PG_POOL_MAX=3` | như trên | — | 4/4 đạt |
+| E. Thanh toán lúc cùng bàn gọi thêm món | 30 vòng × (1 thanh toán + 4 gọi món) | **89/150 request lỗi 500 (deadlock)**, p95 2.019 ms | 150/150 thành công, 0 deadlock, p95 29 ms; chạy thêm 2 × 420 request: 0 deadlock |
+| A–E với `PG_POOL_MAX=3` | như trên | — | 5/5 đạt |
+
+> Cột "Trước" của kịch bản E đo trên bản đã sửa lỗi 1–6 (trước khi sửa lỗi 7).
 
 ### 4.2 Load test (`backend/loadtest/order-load.k6.js`)
 k6 0.54, 50 người dùng ảo (tăng dần 10 s → giữ 30 s → giảm 5 s), gọi món liên tục vào 20 bàn.
